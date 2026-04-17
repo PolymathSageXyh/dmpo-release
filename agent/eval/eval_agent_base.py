@@ -40,9 +40,158 @@ log = logging.getLogger(__name__)
 from env.gym_utils import make_async
 from omegaconf import OmegaConf
 import torch.nn as nn
-import os
-from agent.eval.visualize.utils import read_eval_statistics
 from util.dirs import REINFLOW_DIR 
+
+
+def read_eval_statistics(npz_file_path: str):
+    """
+    Read evaluation statistics from ``eval_statistics.npz``.
+
+    Returns a tuple that matches ``plot_eval_statistics``'s unpacking order:
+    (num_denoising_steps, avg_single_step_freq, avg_single_step_freq_std,
+     avg_single_step_duration, avg_single_step_duration_std,
+     avg_traj_length, avg_traj_length_std,
+     avg_episode_reward, avg_episode_reward_std,
+     avg_best_reward, avg_best_reward_std,
+     success_rate, success_rate_std,
+     num_episodes_finished)
+
+    Supported file layouts:
+    1) Current format: np.savez(path, data=<structured array>)
+    2) Legacy format:  np.savez(path, field1=array1, field2=array2, ...)
+    """
+
+    def _as_1d(array, dtype):
+        arr = np.asarray(array, dtype=dtype)
+        if arr.ndim == 0:
+            arr = arr.reshape(1)
+        return arr
+
+    def _check_length(name, arr, expected_len):
+        if len(arr) != expected_len:
+            raise ValueError(
+                f"Inconsistent length for field '{name}': expected {expected_len}, got {len(arr)}"
+            )
+        return arr
+
+    required_fields = [
+        "num_denoising_steps",
+        "avg_single_step_freq",
+        "avg_single_step_duration",
+        "avg_traj_length",
+        "avg_episode_reward",
+        "avg_best_reward",
+        "success_rate",
+        "num_episodes_finished",
+    ]
+    with np.load(npz_file_path, allow_pickle=False) as loaded:
+        if "data" in loaded.files:
+            data = loaded["data"]
+            if data.ndim == 0:
+                data = data.reshape(1)
+            if data.dtype.names is None:
+                raise ValueError(
+                    f"Invalid statistics file format at {npz_file_path}: 'data' is not a structured array."
+                )
+
+            field_names = set(data.dtype.names)
+            missing_required = [f for f in required_fields if f not in field_names]
+            if missing_required:
+                raise ValueError(
+                    f"Missing required fields in {npz_file_path}: {missing_required}"
+                )
+
+            n = len(data)
+
+            def _get_struct_field(name, dtype, default=None):
+                if name in field_names:
+                    value = _as_1d(data[name], dtype)
+                    return _check_length(name, value, n)
+                if default is None:
+                    raise ValueError(f"Missing required field '{name}' in {npz_file_path}")
+                return np.full(n, default, dtype=dtype)
+
+            num_denoising_steps_list = _get_struct_field("num_denoising_steps", int)
+            avg_single_step_freq_list = _get_struct_field("avg_single_step_freq", float)
+            avg_single_step_freq_std_list = _get_struct_field(
+                "avg_single_step_freq_std", float, 0.0
+            )
+            avg_single_step_duration_list = _get_struct_field(
+                "avg_single_step_duration", float
+            )
+            avg_single_step_duration_std_list = _get_struct_field(
+                "avg_single_step_duration_std", float, 0.0
+            )
+            avg_traj_length_list = _get_struct_field("avg_traj_length", float)
+            avg_traj_length_std_list = _get_struct_field("avg_traj_length_std", float, 0.0)
+            avg_episode_reward_list = _get_struct_field("avg_episode_reward", float)
+            avg_episode_reward_std_list = _get_struct_field(
+                "avg_episode_reward_std", float, 0.0
+            )
+            avg_best_reward_list = _get_struct_field("avg_best_reward", float)
+            avg_best_reward_std_list = _get_struct_field("avg_best_reward_std", float, 0.0)
+            success_rate_list = _get_struct_field("success_rate", float)
+            success_rate_std_list = _get_struct_field("success_rate_std", float, 0.0)
+            num_episodes_finished_list = _get_struct_field("num_episodes_finished", int)
+        else:
+            file_fields = set(loaded.files)
+            missing_required = [f for f in required_fields if f not in file_fields]
+            if missing_required:
+                raise ValueError(
+                    f"Missing required fields in {npz_file_path}: {missing_required}"
+                )
+
+            num_denoising_steps_list = _as_1d(loaded["num_denoising_steps"], int)
+            n = len(num_denoising_steps_list)
+
+            def _get_plain_field(name, dtype, default=None):
+                if name in file_fields:
+                    value = _as_1d(loaded[name], dtype)
+                    return _check_length(name, value, n)
+                if default is None:
+                    raise ValueError(f"Missing required field '{name}' in {npz_file_path}")
+                return np.full(n, default, dtype=dtype)
+
+            avg_single_step_freq_list = _get_plain_field("avg_single_step_freq", float)
+            avg_single_step_freq_std_list = _get_plain_field(
+                "avg_single_step_freq_std", float, 0.0
+            )
+            avg_single_step_duration_list = _get_plain_field(
+                "avg_single_step_duration", float
+            )
+            avg_single_step_duration_std_list = _get_plain_field(
+                "avg_single_step_duration_std", float, 0.0
+            )
+            avg_traj_length_list = _get_plain_field("avg_traj_length", float)
+            avg_traj_length_std_list = _get_plain_field("avg_traj_length_std", float, 0.0)
+            avg_episode_reward_list = _get_plain_field("avg_episode_reward", float)
+            avg_episode_reward_std_list = _get_plain_field(
+                "avg_episode_reward_std", float, 0.0
+            )
+            avg_best_reward_list = _get_plain_field("avg_best_reward", float)
+            avg_best_reward_std_list = _get_plain_field("avg_best_reward_std", float, 0.0)
+            success_rate_list = _get_plain_field("success_rate", float)
+            success_rate_std_list = _get_plain_field("success_rate_std", float, 0.0)
+            num_episodes_finished_list = _get_plain_field("num_episodes_finished", int)
+
+    return (
+        num_denoising_steps_list,
+        avg_single_step_freq_list,
+        avg_single_step_freq_std_list,
+        avg_single_step_duration_list,
+        avg_single_step_duration_std_list,
+        avg_traj_length_list,
+        avg_traj_length_std_list,
+        avg_episode_reward_list,
+        avg_episode_reward_std_list,
+        avg_best_reward_list,
+        avg_best_reward_std_list,
+        success_rate_list,
+        success_rate_std_list,
+        num_episodes_finished_list,
+    )
+
+
 class EvalAgent:
     def __init__(self, cfg):
         super().__init__()
@@ -350,7 +499,15 @@ class EvalAgent:
                 single_step_duration_list[step] = single_step_duration
                 
                 output_venv = samples.trajectories.cpu().numpy()
-            action_venv = output_venv[:, : self.act_steps]
+            action_venv = np.asarray(output_venv[:, : self.act_steps], dtype=np.float32)
+            if not np.isfinite(action_venv).all():
+                log.warning(
+                    "Detected non-finite actions from policy output. Replacing NaN/Inf and clipping to [-1, 1]."
+                )
+            action_venv = np.nan_to_num(
+                action_venv, nan=0.0, posinf=1.0, neginf=-1.0
+            )
+            action_venv = np.clip(action_venv, -1.0, 1.0)
             
             obs_venv, reward_venv, terminated_venv, truncated_venv, info_venv = (
                 self.venv.step(action_venv)
