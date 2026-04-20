@@ -10,7 +10,7 @@ and the normalization info is also used in RL fine-tuning.
 
 """
 
-from typing import Dict, NamedTuple
+from collections import namedtuple
 import numpy as np
 import torch
 import logging
@@ -20,24 +20,11 @@ from tqdm import tqdm
 
 log = logging.getLogger(__name__)
 
-class Batch(NamedTuple):
-    actions: torch.Tensor
-    conditions: Dict[str, torch.Tensor]
-
-
-class Transition(NamedTuple):
-    actions: torch.Tensor
-    conditions: Dict[str, torch.Tensor]
-    rewards: torch.Tensor
-    dones: torch.Tensor
-
-
-class TransitionWithReturn(NamedTuple):
-    actions: torch.Tensor
-    conditions: Dict[str, torch.Tensor]
-    rewards: torch.Tensor
-    dones: torch.Tensor
-    reward_to_gos: torch.Tensor
+Batch = namedtuple("Batch", "actions conditions")
+Transition = namedtuple("Transition", "actions conditions rewards dones")
+TransitionWithReturn = namedtuple(
+    "Transition", "actions conditions rewards dones reward_to_gos"
+)
 
 
 class StitchedSequenceDataset(torch.utils.data.Dataset):
@@ -64,19 +51,14 @@ class StitchedSequenceDataset(torch.utils.data.Dataset):
         use_img=False,
         device="cuda:0",
     ):
-        assert cond_steps >= 1, f"cond_steps must be >= 1, got {cond_steps}"
         assert (
             img_cond_steps <= cond_steps
         ), "consider using more cond_steps than img_cond_steps"
-        if use_img:
-            assert (
-                img_cond_steps >= 1
-            ), f"img_cond_steps must be >= 1 when use_img=True, got {img_cond_steps}"
         
         print(f"max_n_episodes={max_n_episodes}")
-        self.horizon_steps = int(horizon_steps)
-        self.cond_steps = int(cond_steps)  # states (proprio, etc.)
-        self.img_cond_steps = int(img_cond_steps)
+        self.horizon_steps = horizon_steps
+        self.cond_steps = cond_steps  # states (proprio, etc.)
+        self.img_cond_steps = img_cond_steps
         self.device = device
         self.use_img = use_img
         self.max_n_episodes = max_n_episodes
@@ -97,7 +79,7 @@ class StitchedSequenceDataset(torch.utils.data.Dataset):
         traj_lengths = dataset["traj_lengths"][:max_n_episodes]  # 1-D array
         total_num_steps = np.sum(traj_lengths)
         # Set up indices for sampling
-        self.indices = self.make_indices(traj_lengths, self.horizon_steps)
+        self.indices = self.make_indices(traj_lengths, horizon_steps)
 
         # Extract states and actions up to max_n_episodes
         self.states = (
@@ -122,22 +104,6 @@ class StitchedSequenceDataset(torch.utils.data.Dataset):
             log.info(f"Images shape/type: {self.images.shape, self.images.dtype}")
         log.info(f"Finished creating {self.__class__.__name__} from {dataset_path}")
 
-    @staticmethod
-    def _stack_history_window(sequence: torch.Tensor, num_before_start: int, n_hist: int):
-        """
-        Build a history window of length `n_hist` from a sequence that starts at
-        episode start and ends at current step.
-
-        If history goes beyond episode start, repeat the first valid element.
-        """
-        idxs = []
-        for offset in range(n_hist - 1, -1, -1):
-            idx = num_before_start - offset
-            if idx < 0:
-                idx = 0
-            idxs.append(idx)
-        return torch.stack([sequence[i] for i in idxs], dim=0)
-
     def __getitem__(self, idx):
         """
         repeat states/images if using history observation at the beginning of the episode
@@ -159,13 +125,23 @@ class StitchedSequenceDataset(torch.utils.data.Dataset):
         
         states = self.states[(start - num_before_start) : (start + 1)]
         actions = self.actions[start:end]
-        states = self._stack_history_window(states, num_before_start, self.cond_steps)
+        states = torch.stack(
+            [
+                states[max(num_before_start - t, 0)]
+                for t in reversed(range(self.cond_steps))
+            ]
+        )  # more recent is at the end
         conditions = {"state": states}
         if self.use_img:
-            images = self.images[(start - num_before_start) : (start + 1)]
-            images = self._stack_history_window(images, num_before_start, self.img_cond_steps)
+            images = self.images[(start - num_before_start) : end]
+            images = torch.stack(
+                [
+                    images[max(num_before_start - t, 0)]
+                    for t in reversed(range(self.img_cond_steps))
+                ]
+            )
             conditions["rgb"] = images
-        batch = Batch(actions=actions, conditions=conditions)
+        batch = Batch(actions, conditions)
         return batch
 
     def make_indices(self, traj_lengths, horizon_steps):
@@ -313,29 +289,42 @@ class StitchedSequenceQLearningDataset(StitchedSequenceDataset):
             next_states = torch.zeros_like(states)
 
         # stack obs history
-        states = self._stack_history_window(states, num_before_start, self.cond_steps)
-        next_states = self._stack_history_window(
-            next_states, num_before_start, self.cond_steps
-        )
+        states = torch.stack(
+            [
+                states[max(num_before_start - t, 0)]
+                for t in reversed(range(self.cond_steps))
+            ]
+        )  # more recent is at the end
+        next_states = torch.stack(
+            [
+                next_states[max(num_before_start - t, 0)]
+                for t in reversed(range(self.cond_steps))
+            ]
+        )  # more recent is at the end
         conditions = {"state": states, "next_state": next_states}
         if self.use_img:
-            images = self.images[(start - num_before_start) : (start + 1)]
-            images = self._stack_history_window(images, num_before_start, self.img_cond_steps)
+            images = self.images[(start - num_before_start) : end]
+            images = torch.stack(
+                [
+                    images[max(num_before_start - t, 0)]
+                    for t in reversed(range(self.img_cond_steps))
+                ]
+            )
             conditions["rgb"] = images
         if self.get_mc_return:
             reward_to_gos = self.reward_to_go[start : (start + 1)]
             batch = TransitionWithReturn(
-                actions=actions,
-                conditions=conditions,
-                rewards=rewards,
-                dones=dones,
-                reward_to_gos=reward_to_gos,
+                actions,
+                conditions,
+                rewards,
+                dones,
+                reward_to_gos,
             )
         else:
             batch = Transition(
-                actions=actions,
-                conditions=conditions,
-                rewards=rewards,
-                dones=dones,
+                actions,
+                conditions,
+                rewards,
+                dones,
             )
         return batch
