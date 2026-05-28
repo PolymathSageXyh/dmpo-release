@@ -74,7 +74,7 @@ class TrainPPOMeanFlowAgent(TrainPPOShortCutAgent):
             clipfrac, approx_kl, ratio, \
             oldlogprob_min, oldlogprob_max, oldlogprob_std, \
                 newlogprob_min, newlogprob_max, newlogprob_std, \
-                noise_std, newQ_values = self.model.loss(*minibatch,
+                noise_std, Q_values = self.model.loss(*minibatch,
                                                     use_bc_loss=self.use_bc_loss,
                                                     bc_loss_type=self.bc_loss_type,
                                                     normalize_denoising_horizon=self.normalize_denoising_horizon,
@@ -103,32 +103,30 @@ class TrainPPOMeanFlowAgent(TrainPPOShortCutAgent):
 
             loss.backward()
 
-            # Gradient accumulation support
-            if (batch_id + 1) % self.grad_accumulate == 0:
-                # Compute gradient norms for monitoring
-                actor_norm = torch.nn.utils.clip_grad_norm_(self.model.actor_ft.parameters(), max_norm=float('inf'))
-                critic_norm = torch.nn.utils.clip_grad_norm_(self.model.critic.parameters(), max_norm=float('inf'))
-                if verbose:
-                    log.info(f"MeanFlow before clipping: actor_norm={actor_norm:.2e}, critic_norm={critic_norm:.2e}")
+            # Compute gradient norms for monitoring
+            actor_norm = torch.nn.utils.clip_grad_norm_(self.model.actor_ft.parameters(), max_norm=float('inf'))
+            critic_norm = torch.nn.utils.clip_grad_norm_(self.model.critic.parameters(), max_norm=float('inf'))
+            if verbose:
+                log.info(f"MeanFlow before clipping: actor_norm={actor_norm:.2e}, critic_norm={critic_norm:.2e}")
 
-                # Update actor after critic warmup
-                if self.itr >= self.n_critic_warmup_itr:
-                    if self.max_grad_norm:
-                        torch.nn.utils.clip_grad_norm_(self.model.actor_ft.parameters(), self.max_grad_norm)
-                    self.actor_optimizer.step()
-
-                # Update critic
+            # Update actor after critic warmup
+            if self.itr >= self.n_critic_warmup_itr:
                 if self.max_grad_norm:
-                    torch.nn.utils.clip_grad_norm_(self.model.critic.parameters(), self.max_grad_norm)
-                self.critic_optimizer.step()
+                    torch.nn.utils.clip_grad_norm_(self.model.actor_ft.parameters(), self.max_grad_norm)
+                self.actor_optimizer.step()
 
-                # Clear gradients
-                self.actor_optimizer.zero_grad()
-                self.critic_optimizer.zero_grad()
+            # Update critic
+            if self.max_grad_norm:
+                torch.nn.utils.clip_grad_norm_(self.model.critic.parameters(), self.max_grad_norm)
+            self.critic_optimizer.step()
 
-                if verbose:
-                    log.info(f"MeanFlow grad update at batch {batch_id}")
-                    log.info(f"MeanFlow approx_kl: {approx_kl}, update_epoch: {update_epoch}/{self.update_epochs}, num_batch: {self.total_steps // self.batch_size}")
+            # Clear gradients
+            self.actor_optimizer.zero_grad()
+            self.critic_optimizer.zero_grad()
+
+            if verbose:
+                log.info(f"MeanFlow grad update at batch {batch_id}")
+                log.info(f"MeanFlow approx_kl: {approx_kl}, update_epoch: {update_epoch}/{self.update_epochs}, num_batch: {self.total_steps // self.batch_size}")
 
         # Aggregate statistics
         clip_fracs = np.mean(clipfracs_list)
@@ -158,7 +156,7 @@ class TrainPPOMeanFlowAgent(TrainPPOShortCutAgent):
             "min_logprob_noise_std": self.model.min_logprob_denoising_std,
             "min_sampling_noise_std": self.model.min_sampling_denoising_std,
             "noise_std": noise_stds,
-            "Q_values": self.Q_values  # Old Q values for consistency with diffusion PPO
+            "Q_values": Q_values  # Old Q values for consistency with diffusion PPO
         }
 
     def run(self):
@@ -190,7 +188,7 @@ class TrainPPOMeanFlowAgent(TrainPPOShortCutAgent):
         while self.itr < self.n_train_itr:
             self.prepare_video_path()
             self.set_model_mode()
-            self.reset_env(buffer_device=self.buffer_device)
+            self.reset_env()
             self.buffer.update_full_obs()
 
             # Data collection phase
@@ -201,27 +199,22 @@ class TrainPPOMeanFlowAgent(TrainPPOShortCutAgent):
                 with torch.no_grad():
                     # Prepare proprioceptive observations
                     cond = {
-                        "state": torch.from_numpy(self.prev_obs_venv["state"])
-                        .float()
-                        .to(self.device)
+                        "state": torch.tensor(self.prev_obs_venv["state"], device=self.device, dtype=torch.float32)
                     }
+                    value_venv = self.get_value(cond=cond) # for gpu version add , device=self.device
+                    action_samples, chains_venv, logprob_venv = self.get_samples_logprobs(cond=cond, 
+                                                                                          normalize_denoising_horizon=self.normalize_denoising_horizon,
+                                                                                          normalize_act_space_dimension=self.normalize_act_space_dim, 
+                                                                                          clip_intermediate_actions=self.clip_intermediate_actions,
+                                                                                          account_for_initial_stochasticity=self.account_for_initial_stochasticity) # for gpu version, add , device=self.device
 
-                    # Sample actions using MeanFlow
-                    action_samples, chains_venv = self.get_samples(
-                        cond=cond,
-                        ret_device=self.buffer_device,
-                        normalize_denoising_horizon=self.normalize_denoising_horizon,
-                        normalize_act_space_dimension=self.normalize_act_space_dim,
-                        clip_intermediate_actions=self.clip_intermediate_actions,
-                        account_for_initial_stochasticity=self.account_for_initial_stochasticity
-                    )
-
-                # Execute actions in environment
-                action_venv = action_samples[:, :self.act_steps]
+                # Apply multi-step action
+                action_venv = action_samples[:, : self.act_steps]
                 obs_venv, reward_venv, terminated_venv, truncated_venv, info_venv = self.venv.step(action_venv)
 
-                # Store experience in buffer
-                self.buffer.add(step, self.prev_obs_venv, chains_venv, reward_venv, terminated_venv, truncated_venv)
+                self.buffer.save_full_obs(info_venv)
+                self.buffer.add(step, self.prev_obs_venv["state"], chains_venv, reward_venv, terminated_venv, truncated_venv, value_venv, logprob_venv)
+
 
                 self.prev_obs_venv = obs_venv
                 self.cnt_train_step += self.n_envs * self.act_steps if not self.eval_mode else 0
@@ -232,7 +225,7 @@ class TrainPPOMeanFlowAgent(TrainPPOShortCutAgent):
             if not self.eval_mode:
                 # Update buffer with final observations and perform training update
                 self.buffer: PPOFlowBuffer
-                self.buffer.update(obs_venv, self.model)
+                self.buffer.update(obs_venv, self.model.critic)
                 self.agent_update(verbose=self.verbose)
 
             # Logging and checkpointing

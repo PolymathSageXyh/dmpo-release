@@ -44,6 +44,7 @@ class TrainPPOShortCutAgent(TrainPPOAgent):
     def __init__(self, cfg):
         super().__init__(cfg)
         # Reward horizon --- always set to act_steps for now
+        self.use_early_stop = False
         
         self.reward_horizon = cfg.get("reward_horizon", self.act_steps)
         self.inference_steps = self.model.inference_steps
