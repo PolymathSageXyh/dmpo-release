@@ -293,7 +293,13 @@ class PPOMeanFlow(PPOFlow):
             xt = x_chain[:, i]  # [B, Ta, Da]
             
             # Predict average velocity and noise
-            ut, nt = self.actor_ft.forward(xt, t, r, cond, True, i)  # [B, Ta, Da], [B, Ta*Da]
+            # ut, nt = self.actor_ft.forward(xt, t, r, cond, True, i)  # [B, Ta, Da], [B, Ta*Da]
+            was_training = self.actor_ft.policy.training
+            self.actor_ft.policy.eval()
+            try:
+                ut, nt = self.actor_ft.forward(xt, t, r, cond, True, i)
+            finally:
+                self.actor_ft.policy.train(was_training)
             
             chains_vel[:, i] = ut.flatten(-2, -1)  # [B, Ta*Da]
             chains_stds[:, i] = nt  # [B, Ta*Da]
@@ -403,7 +409,13 @@ class PPOMeanFlow(PPOFlow):
             # Predict average velocity and exploration noise
             # IMPORTANT: During training, we need to learn exploration noise to match get_logprobs()
             # During eval, we use deterministic policy without learned noise
-            ut, nt = self.actor_ft.forward(xt, t, r, cond, learn_exploration_noise=not eval_mode, step=i)
+            #ut, nt = self.actor_ft.forward(xt, t, r, cond, learn_exploration_noise=not eval_mode, step=i)
+            was_training = self.actor_ft.policy.training
+            self.actor_ft.policy.eval()
+            try:
+                ut, nt = self.actor_ft.forward(xt, t, r, cond, learn_exploration_noise=not eval_mode, step=i)
+            finally:
+                self.actor_ft.policy.train(was_training)
             
             # MeanFlow update: x_r = x_t - (t-r) * u(x_t, t, r, s)
             time_diff = t_curr - r_next
