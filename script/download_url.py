@@ -66,10 +66,7 @@ def get_dataset_download_url(cfg):
         else:
             return "https://drive.google.com/drive/u/1/folders/1BJu8NklriunDHsDrLT6fEpcro3_2IPFf"
     elif env == "ant-medium-expert-v2":
-        if use_d4rl_dataset:
-            return "https://drive.google.com/drive/folders/1dZHv_DxEN3Yukfw5B8LtRQK7nnbmwzKE?usp=drive_link"
-        else:
-            return  
+        return "https://drive.google.com/drive/folders/1dZHv_DxEN3Yukfw5B8LtRQK7nnbmwzKE?usp=drive_link" 
     elif env == "Humanoid-medium-v3":
         return "https://drive.google.com/drive/folders/1J6nDPwiNRoecn1M8aEagyTKOBhaVJ0Mo?usp=drive_link"  # This is new to DPPO. We collect the data from our own SAC expert agent trained via https://github.com/cubrink/mujoco-2.1-rl-project#
     elif env == "kitchen-complete-v0":
@@ -140,10 +137,7 @@ def get_normalization_download_url(cfg):
         else:
             return "https://drive.google.com/file/d/1NSX7t3DFKaBj5HNpv91Oo5h6oXTk0zoo/view?usp=drive_link"
     elif env == "ant-medium-expert-v2":
-        if use_d4rl_dataset:
-            return "https://drive.google.com/file/d/1tgHdWq97SwKxUGh57YbgrH36nx_uKg8T/view?usp=drive_link"
-        else:
-            return  
+        return "https://drive.google.com/file/d/1tgHdWq97SwKxUGh57YbgrH36nx_uKg8T/view?usp=drive_link"
     elif env == "Humanoid-medium-v3":
         return "https://drive.google.com/file/d/1i4rlSk5GhO2TBK3n7KYblcu_I1MAg71v/view?usp=drive_link"  # This is new to DPPO. We collect the data from our own SAC expert agent trained via https://github.com/cubrink/mujoco-2.1-rl-project#
     
